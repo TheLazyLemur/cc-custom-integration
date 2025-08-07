@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "permission": {
+      "type": "sse",
+      "url": "http://localhost:8080/sse"
+    }
+  }
+}
