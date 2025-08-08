@@ -424,4 +424,3 @@ func wordWrap(text string, width int) string {
 
 	return strings.Join(result, "\n")
 }
-

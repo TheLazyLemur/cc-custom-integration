@@ -317,4 +317,3 @@ func (sm *SessionManager) GetCurrentSession() SessionInfo {
 func (sm *SessionManager) GetStats() SessionStats {
 	return sm.getSessionStats()
 }
-

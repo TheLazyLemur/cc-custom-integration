@@ -192,10 +192,11 @@ func (a *Application) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-		// Update markdown renderer width
+		// Update markdown renderer width using layout manager constraints
 		if a.markdownRenderer != nil {
-			// Account for panels and margins
-			contentWidth := a.width - 40
+			lm := components.NewLayoutManager(a.width, a.height)
+			constraints := lm.GetConversationConstraints()
+			contentWidth := constraints.ConversationWidth - 4 // account for message prefix/padding
 			if contentWidth > 20 {
 				a.markdownRenderer.UpdateWidth(contentWidth)
 			}
@@ -215,9 +216,11 @@ func (a *Application) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Keep only last 500 messages to prevent memory issues
 		if len(a.messages) > 500 {
 			a.messages = a.messages[len(a.messages)-500:]
+			// Recalculate scroll position after truncation
+			a.clampScrollPosition()
 		}
 		// Auto-scroll to bottom for new messages
-		a.scrollPosition = 99999 // Will be clamped to max in render
+		a.scrollToBottomSafe()
 		return a, nil
 
 	case ToolActivityMsg:
@@ -345,7 +348,6 @@ func (a *Application) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.cursorPos = 0
 		}
 		return a, nil
-
 
 	case "esc":
 		if a.inputActive {
@@ -539,7 +541,7 @@ func (a *Application) handlePromptInput(msg PromptInputMsg) (tea.Model, tea.Cmd)
 	a.messages = append(a.messages, userMsg)
 
 	// Auto-scroll to bottom to show new user message
-	a.scrollPosition = 99999 // Will be clamped to max in render
+	a.scrollToBottomSafe()
 
 	return a, tea.Cmd(func() tea.Msg {
 		go func() {
@@ -587,26 +589,27 @@ func (a *Application) renderMainView() string {
 		Width(a.width - 2).
 		Render("Ctrl+C/Q: Quit | Ctrl+N: New | Ctrl+H: Help | Enter: Input | Esc: Cancel")
 
-	// Available height for content
-	contentHeight := a.height - 4 // header + footer + margins
+	// Layout calculations via LayoutManager
+	lm := components.NewLayoutManager(a.width, a.height)
+	dims := lm.CalculatePanelDimensions()
 
-	// Main content area
-	leftWidth := a.width - 35 // Leave space for side panel
-
-	// Conversation panel
-	conversationContent := a.renderConversationPanel(leftWidth-4, contentHeight-4)
+	// Conversation panel: pass inner content height (panel height minus padding/border)
+	conversationContent := a.renderConversationPanel(
+		dims.ConversationWidth-4,
+		max(1, dims.ConversationHeight-4),
+	)
 	conversationPanel := a.styles.MainPanel.
-		Width(leftWidth).
-		Height(contentHeight - 4).
+		Width(dims.ConversationWidth).
+		Height(dims.ConversationHeight).
 		Render(conversationContent)
 
-	// Side panel with session info
-	sideContent := a.renderSidePanel()
+	// Side panel with session info (pass inner height like conversation)
+	sideContent := a.renderSidePanel(max(1, dims.SidebarHeight-4))
 	sidePanel := a.styles.SidePanel.
-		Height(contentHeight - 4).
+		Height(dims.SidebarHeight).
 		Render(sideContent)
 
-	// Input panel
+		// Input panel
 	inputContent := a.renderInputPanel(a.width - 4)
 	inputPanel := a.styles.InputPanel.
 		Width(a.width - 2).
@@ -628,6 +631,12 @@ func (a *Application) renderMainView() string {
 		footer,
 	)
 }
+
+// Optional future: hook for layout validation. Currently a no-op to avoid changing behavior.
+// func (a *Application) validateLayout() {
+//     lm := components.NewLayoutManager(a.width, a.height)
+//     _ = lm // Placeholder for validation via lm.ValidatePanelHeights
+// }
 
 // renderConversationPanel renders the main conversation area with scrolling
 func (a *Application) renderConversationPanel(width, height int) string {
@@ -694,17 +703,12 @@ func (a *Application) renderConversationPanel(width, height int) string {
 		return a.styles.Status.Render("Window too small")
 	}
 
-	// Reserve space for scroll indicator (2 lines: empty + indicator)
+	// Always reserve space for scroll indicator to maintain consistent viewport
 	scrollIndicatorLines := 2
-	needsScrollIndicator := totalLines > (height - scrollIndicatorLines)
+	contentViewportHeight := height - scrollIndicatorLines
 
-	// Calculate viewport height for content
-	var contentViewportHeight int
-	if needsScrollIndicator {
-		contentViewportHeight = height - scrollIndicatorLines
-	} else {
-		contentViewportHeight = height
-	}
+	// Show scroll indicator when needed, but viewport height stays consistent
+	needsScrollIndicator := totalLines > contentViewportHeight
 
 	// Ensure scroll position is valid
 	if a.scrollPosition < 0 {
@@ -765,11 +769,17 @@ func (a *Application) renderConversationPanel(width, height int) string {
 
 		// Add separator and scroll indicator
 		finalContent = append(finalContent, "")
-		finalContent = append(finalContent, a.styles.Status.Render(scrollInfo))
+		if len(finalContent) < height {
+			finalContent = append(finalContent, a.styles.Status.Render(scrollInfo))
+		}
 	}
 
 	for len(finalContent) < height {
 		finalContent = append(finalContent, "")
+	}
+	// Safety cap: never exceed allotted height
+	if len(finalContent) > height {
+		finalContent = finalContent[:height]
 	}
 	content := strings.Join(finalContent, "\n")
 
@@ -777,7 +787,7 @@ func (a *Application) renderConversationPanel(width, height int) string {
 }
 
 // renderSidePanel renders the side panel with session info
-func (a *Application) renderSidePanel() string {
+func (a *Application) renderSidePanel(height int) string {
 	var content []string
 
 	// Session info
@@ -844,6 +854,17 @@ func (a *Application) renderSidePanel() string {
 		}
 	}
 
+	// Ensure the side panel content fits exactly the inner height
+	if height < 1 {
+		height = 1
+	}
+	if len(content) < height {
+		for len(content) < height {
+			content = append(content, "")
+		}
+	} else if len(content) > height {
+		content = content[:height]
+	}
 	return strings.Join(content, "\n")
 }
 
@@ -856,7 +877,7 @@ func (a *Application) renderInputPanel(width int) string {
 	if a.inputActive {
 		var modeIndicator string
 		var cursor string
-		
+
 		switch a.inputMode {
 		case InputModeNormal:
 			modeIndicator = "[NORMAL]"
@@ -865,12 +886,12 @@ func (a *Application) renderInputPanel(width int) string {
 			modeIndicator = "[INSERT]"
 			cursor = "│" // Line cursor for insert mode
 		}
-		
+
 		// Show command buffer if in multi-key command
 		if a.commandBuffer != "" {
 			modeIndicator = fmt.Sprintf("[NORMAL:%s]", a.commandBuffer)
 		}
-		
+
 		// Build input line with cursor at correct position
 		var inputLine string
 		if len(a.inputBuffer) == 0 {
@@ -880,7 +901,7 @@ func (a *Application) renderInputPanel(width int) string {
 		} else {
 			inputLine = a.inputBuffer[:a.cursorPos] + cursor + a.inputBuffer[a.cursorPos:]
 		}
-		
+
 		prompt := fmt.Sprintf("%s > %s", modeIndicator, inputLine)
 		return a.styles.Highlight.Render(prompt)
 	}
@@ -1008,6 +1029,93 @@ func wordWrap(text string, width int) string {
 	return strings.Join(result, "\n")
 }
 
+// Helper methods for safe scrolling
+func (a *Application) calculateMaxScrollPosition() int {
+	// Use LayoutManager to match rendered widths/heights
+	lm := components.NewLayoutManager(a.width, a.height)
+	dims := lm.CalculatePanelDimensions()
+	constraints := lm.GetConversationConstraints()
+
+	// Match wrapping used in renderConversationPanel for non-markdown content
+	wrapBaseWidth := dims.ConversationWidth - 4
+	if wrapBaseWidth < 1 {
+		wrapBaseWidth = 1
+	}
+	wrapWidth := wrapBaseWidth - 4
+	if wrapWidth < 1 {
+		wrapWidth = 1
+	}
+
+	// Calculate total lines from all messages using same logic as renderConversationPanel
+	var allLines []string
+	for i, msg := range a.messages {
+		var formattedMsg string
+		switch msg.Type {
+		case "assistant":
+			if a.markdownRenderer != nil {
+				if rendered, err := a.markdownRenderer.Render(msg.Content); err == nil {
+					rendered = strings.TrimSpace(rendered)
+					lines := strings.Split(rendered, "\n")
+					if len(lines) > 0 {
+						lines[0] = "🤖 " + lines[0]
+						for j := 1; j < len(lines); j++ {
+							lines[j] = "   " + lines[j]
+						}
+					}
+					formattedMsg = strings.Join(lines, "\n")
+				} else {
+					wrapped := wordWrap(msg.Content, wrapWidth)
+					formattedMsg = "🤖 " + wrapped
+				}
+			} else {
+				wrapped := wordWrap(msg.Content, wrapWidth)
+				formattedMsg = "🤖 " + wrapped
+			}
+		case "tool_use":
+			wrapped := wordWrap(msg.Content, wrapWidth)
+			formattedMsg = "🔧 " + wrapped
+		case "user":
+			wrapped := wordWrap(msg.Content, wrapWidth)
+			formattedMsg = "👤 " + wrapped
+		default:
+			wrapped := wordWrap(msg.Content, wrapWidth)
+			formattedMsg = "ℹ️  " + wrapped
+		}
+		msgLines := strings.Split(formattedMsg, "\n")
+		allLines = append(allLines, msgLines...)
+		if i < len(a.messages)-1 {
+			allLines = append(allLines, "")
+		}
+	}
+
+	totalLines := len(allLines)
+
+	viewportHeight := constraints.ViewportHeight
+	if viewportHeight < 1 {
+		viewportHeight = 1
+	}
+
+	maxScroll := totalLines - viewportHeight
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	return maxScroll
+}
+
+func (a *Application) clampScrollPosition() {
+	if a.scrollPosition < 0 {
+		a.scrollPosition = 0
+	}
+	maxScroll := a.calculateMaxScrollPosition()
+	if a.scrollPosition > maxScroll {
+		a.scrollPosition = maxScroll
+	}
+}
+
+func (a *Application) scrollToBottomSafe() {
+	a.scrollPosition = a.calculateMaxScrollPosition()
+}
+
 // Scrolling methods
 func (a *Application) scrollUp() {
 	if a.scrollPosition > 0 {
@@ -1016,20 +1124,30 @@ func (a *Application) scrollUp() {
 }
 
 func (a *Application) scrollDown() {
-	// scrollDown will be called when we have content to scroll
-	// The max position will be calculated in renderConversationPanel
-	a.scrollPosition++
+	maxScroll := a.calculateMaxScrollPosition()
+	if a.scrollPosition < maxScroll {
+		a.scrollPosition++
+	}
 }
 
 func (a *Application) scrollPageUp() {
-	pageSize := 10 // Scroll by 10 lines
-	a.scrollPosition = max(0, a.scrollPosition-pageSize)
+	lm := components.NewLayoutManager(a.width, a.height)
+	viewport := lm.GetConversationConstraints().ViewportHeight
+	if viewport < 1 {
+		viewport = 1
+	}
+	a.scrollPosition -= viewport
+	a.clampScrollPosition()
 }
 
 func (a *Application) scrollPageDown() {
-	pageSize := 10 // Scroll by 10 lines
-	a.scrollPosition = a.scrollPosition + pageSize
-	// Max scroll will be enforced in renderConversationPanel
+	lm := components.NewLayoutManager(a.width, a.height)
+	viewport := lm.GetConversationConstraints().ViewportHeight
+	if viewport < 1 {
+		viewport = 1
+	}
+	a.scrollPosition += viewport
+	a.clampScrollPosition()
 }
 
 func (a *Application) scrollToTop() {
@@ -1037,8 +1155,7 @@ func (a *Application) scrollToTop() {
 }
 
 func (a *Application) scrollToBottom() {
-	// Set to a large number; renderConversationPanel will clamp it
-	a.scrollPosition = 99999
+	a.scrollToBottomSafe()
 }
 
 func min(a, b int) int {
@@ -1066,17 +1183,17 @@ func (a *Application) moveWordForward() {
 	if a.cursorPos >= len(a.inputBuffer) {
 		return
 	}
-	
+
 	// Skip current word
 	for a.cursorPos < len(a.inputBuffer) && a.inputBuffer[a.cursorPos] != ' ' {
 		a.cursorPos++
 	}
-	
+
 	// Skip spaces
 	for a.cursorPos < len(a.inputBuffer) && a.inputBuffer[a.cursorPos] == ' ' {
 		a.cursorPos++
 	}
-	
+
 	if a.cursorPos >= len(a.inputBuffer) && len(a.inputBuffer) > 0 {
 		a.cursorPos = len(a.inputBuffer) - 1
 	}
@@ -1087,15 +1204,15 @@ func (a *Application) moveWordBackward() {
 	if a.cursorPos <= 0 {
 		return
 	}
-	
+
 	// Move back one position
 	a.cursorPos--
-	
+
 	// Skip spaces
 	for a.cursorPos > 0 && a.inputBuffer[a.cursorPos] == ' ' {
 		a.cursorPos--
 	}
-	
+
 	// Skip to start of word
 	for a.cursorPos > 0 && a.inputBuffer[a.cursorPos-1] != ' ' {
 		a.cursorPos--
@@ -1107,23 +1224,23 @@ func (a *Application) deleteWord() {
 	if a.cursorPos >= len(a.inputBuffer) {
 		return
 	}
-	
+
 	startPos := a.cursorPos
-	
+
 	// Find end of word
 	for a.cursorPos < len(a.inputBuffer) && a.inputBuffer[a.cursorPos] != ' ' {
 		a.cursorPos++
 	}
-	
+
 	// Include trailing space if it exists
 	if a.cursorPos < len(a.inputBuffer) && a.inputBuffer[a.cursorPos] == ' ' {
 		a.cursorPos++
 	}
-	
+
 	// Delete the word
 	a.inputBuffer = a.inputBuffer[:startPos] + a.inputBuffer[a.cursorPos:]
 	a.cursorPos = startPos
-	
+
 	// Adjust cursor if at end
 	if a.cursorPos >= len(a.inputBuffer) && len(a.inputBuffer) > 0 {
 		a.cursorPos = len(a.inputBuffer) - 1

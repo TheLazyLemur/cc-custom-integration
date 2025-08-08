@@ -75,7 +75,7 @@ func (eb *EventBus) HandleEvent(event claude.Event) {
 // Shutdown gracefully shuts down the event bus
 func (eb *EventBus) Shutdown() {
 	eb.cancel()
-	
+
 	eb.mutex.Lock()
 	defer eb.mutex.Unlock()
 
@@ -85,7 +85,7 @@ func (eb *EventBus) Shutdown() {
 			close(ch)
 		}
 	}
-	
+
 	eb.subscribers = make(map[claude.EventType][]chan claude.Event)
 }
 

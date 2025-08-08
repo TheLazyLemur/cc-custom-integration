@@ -38,13 +38,13 @@ func (mr *MarkdownRenderer) UpdateWidth(width int) error {
 	if width == mr.width {
 		return nil
 	}
-	
+
 	// Recreate renderer with new width
 	newRenderer, err := NewMarkdownRenderer(width)
 	if err != nil {
 		return err
 	}
-	
+
 	mr.renderer = newRenderer.renderer
 	mr.width = width
 	return nil
