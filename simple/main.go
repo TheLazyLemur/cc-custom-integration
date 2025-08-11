@@ -9,6 +9,9 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type Message struct {
@@ -56,6 +59,112 @@ type SessionManager struct {
 	CumulativeCost      float64
 	CumulativeUsage     Usage
 	ConversationStart   time.Time
+	markdownRenderer    *glamour.TermRenderer
+	systemInitShown     bool
+}
+
+var (
+	// Color scheme
+	primaryColor   = lipgloss.Color("#646CFF")
+	successColor   = lipgloss.Color("#00D787")
+	warningColor   = lipgloss.Color("#FF8700")
+	errorColor     = lipgloss.Color("#FF5F87")
+	mutedColor     = lipgloss.Color("#6B7280")
+	backgroundFade = lipgloss.Color("#F8FAFC")
+
+	// Styles
+	titleStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(primaryColor).
+		PaddingTop(1).
+		PaddingBottom(1)
+
+	subtitleStyle = lipgloss.NewStyle().
+		Foreground(mutedColor).
+		Italic(true)
+
+	commandStyle = lipgloss.NewStyle().
+		Foreground(primaryColor).
+		Bold(true)
+
+	helpStyle = lipgloss.NewStyle().
+		Foreground(mutedColor).
+		PaddingLeft(2)
+
+	systemStyle = lipgloss.NewStyle().
+		Foreground(successColor).
+		Bold(true)
+
+	errorStyle = lipgloss.NewStyle().
+		Foreground(errorColor).
+		Bold(true)
+
+	toolStyle = lipgloss.NewStyle().
+		Foreground(warningColor).
+		Bold(true)
+
+	promptStyle = lipgloss.NewStyle().
+		Foreground(primaryColor).
+		Bold(true)
+
+	summaryHeaderStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(primaryColor).
+		Background(backgroundFade).
+		Padding(1, 2).
+		MarginTop(1).
+		MarginBottom(1)
+
+	summaryStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(primaryColor).
+		Padding(1, 2)
+
+	metricStyle = lipgloss.NewStyle().
+		Foreground(mutedColor)
+
+	valueStyle = lipgloss.NewStyle().
+		Foreground(primaryColor).
+		Bold(true)
+
+	// Additional subtle styles
+	headerDivider = lipgloss.NewStyle().
+		Foreground(mutedColor).
+		Faint(true)
+
+	successIndicator = lipgloss.NewStyle().
+		Foreground(successColor).
+		Bold(true)
+
+	progressDot = lipgloss.NewStyle().
+		Foreground(primaryColor)
+)
+
+func newMarkdownRenderer() *glamour.TermRenderer {
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(80),
+	)
+	if err != nil {
+		// Fallback to basic renderer if auto-style fails
+		r, _ = glamour.NewTermRenderer(
+			glamour.WithStandardStyle("dark"),
+			glamour.WithWordWrap(80),
+		)
+	}
+	return r
+}
+
+func (sm *SessionManager) renderMarkdown(content string) string {
+	if sm.markdownRenderer == nil {
+		return content // Fallback to plain text
+	}
+	
+	rendered, err := sm.markdownRenderer.Render(content)
+	if err != nil {
+		return content // Fallback to plain text on error
+	}
+	return strings.TrimSuffix(rendered, "\n") // Remove trailing newline
 }
 
 func (sm *SessionManager) ExecuteCommand(prompt string, resume bool) error {
@@ -133,10 +242,21 @@ func (sm *SessionManager) ProcessStream(reader io.Reader) error {
 				if err := json.Unmarshal([]byte(line), &init); err == nil {
 					sm.CurrentSessionID = init.SessionID
 					sm.Model = init.Model
-					fmt.Printf("\n[System] Session initialized: %s\n", init.SessionID)
-					fmt.Printf("[System] Model: %s\n", init.Model)
-					fmt.Printf("[System] Working directory: %s\n", init.CWD)
-					fmt.Printf("[System] Available tools: %d\n\n", len(init.Tools))
+					if !sm.systemInitShown {
+						fmt.Printf("\n%s Session initialized: %s\n", 
+							systemStyle.Render("⚡ [System]"), 
+							valueStyle.Render(init.SessionID))
+						fmt.Printf("%s Model: %s\n", 
+							systemStyle.Render("🤖 [System]"), 
+							valueStyle.Render(init.Model))
+						fmt.Printf("%s Working directory: %s\n", 
+							systemStyle.Render("📁 [System]"), 
+							valueStyle.Render(init.CWD))
+						fmt.Printf("%s Available tools: %s\n\n", 
+							systemStyle.Render("🛠️ [System]"), 
+							valueStyle.Render(fmt.Sprintf("%d", len(init.Tools))))
+						sm.systemInitShown = true
+					}
 				}
 			}
 
@@ -150,10 +270,11 @@ func (sm *SessionManager) ProcessStream(reader io.Reader) error {
 					for _, item := range content {
 						if item["type"] == "text" {
 							if text, ok := item["text"].(string); ok {
-								fmt.Print(text)
+								rendered := sm.renderMarkdown(text)
+								fmt.Print(rendered)
 							}
 						} else if item["type"] == "tool_use" {
-							fmt.Printf("\n[Tool: %s]\n", item["name"])
+							fmt.Printf("\n%s\n", toolStyle.Render(fmt.Sprintf("🔧 [Tool: %s]", item["name"])))
 						}
 					}
 				}
@@ -165,7 +286,7 @@ func (sm *SessionManager) ProcessStream(reader io.Reader) error {
 
 		case "user":
 			// Tool results - just indicate completion
-			fmt.Print(".")
+			fmt.Print(progressDot.Render("•"))
 
 		case "result":
 			if msg.Subtype == "success" {
@@ -185,9 +306,11 @@ func (sm *SessionManager) ProcessStream(reader io.Reader) error {
 				}
 				
 				// Just show a completion indicator, not full session info
-				fmt.Println()
+				fmt.Print(" ")
+				fmt.Print(successIndicator.Render(""))
+				fmt.Print("\n")
 			} else if msg.IsError {
-				fmt.Printf("\n[Error] %s\n", msg.Result)
+				fmt.Printf("\n%s %s\n", errorStyle.Render("❌ [Error]"), msg.Result)
 			}
 		}
 	}
@@ -205,32 +328,63 @@ func (sm *SessionManager) ShowConversationSummary() {
 	}
 
 	duration := time.Since(sm.ConversationStart)
-	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println("CONVERSATION SUMMARY")
-	fmt.Println(strings.Repeat("=", 60))
-	fmt.Printf("Duration: %s\n", duration.Round(time.Second))
-	fmt.Printf("Sessions: %d\n", len(sm.SessionChain))
-	fmt.Printf("Total Turns: %d\n", sm.CumulativeTurns)
-	fmt.Printf("Total Cost: $%.6f\n", sm.CumulativeCost)
-	fmt.Println()
-	fmt.Println("Token Usage:")
-	fmt.Printf("  Input Tokens: %d\n", sm.CumulativeUsage.InputTokens)
-	fmt.Printf("  Cache Creation: %d\n", sm.CumulativeUsage.CacheCreationInputTokens)
-	fmt.Printf("  Cache Read: %d\n", sm.CumulativeUsage.CacheReadInputTokens)
-	fmt.Printf("  Output Tokens: %d\n", sm.CumulativeUsage.OutputTokens)
-	fmt.Printf("  Total Tokens: %d\n", 
-		sm.CumulativeUsage.InputTokens+
-		sm.CumulativeUsage.CacheCreationInputTokens+
-		sm.CumulativeUsage.CacheReadInputTokens+
-		sm.CumulativeUsage.OutputTokens)
+	
+	// Header
+	fmt.Print("\n")
+	fmt.Print(summaryHeaderStyle.Render("CONVERSATION SUMMARY"))
+	fmt.Print("\n")
+	
+	// Main stats
+	var summaryContent strings.Builder
+	summaryContent.WriteString(fmt.Sprintf("%s %s\n", 
+		metricStyle.Render("Duration:"), 
+		valueStyle.Render(duration.Round(time.Second).String())))
+	summaryContent.WriteString(fmt.Sprintf("%s %s\n", 
+		metricStyle.Render("Sessions:"), 
+		valueStyle.Render(fmt.Sprintf("%d", len(sm.SessionChain)))))
+	summaryContent.WriteString(fmt.Sprintf("%s %s\n", 
+		metricStyle.Render("Total Turns:"), 
+		valueStyle.Render(fmt.Sprintf("%d", sm.CumulativeTurns))))
+	summaryContent.WriteString(fmt.Sprintf("%s %s\n\n", 
+		metricStyle.Render("Total Cost:"), 
+		valueStyle.Render(fmt.Sprintf("$%.6f", sm.CumulativeCost))))
+	
+	// Token usage
+	summaryContent.WriteString(fmt.Sprintf("%s\n", 
+		commandStyle.Render("Token Usage:")))
+	summaryContent.WriteString(fmt.Sprintf("  %s %s\n", 
+		metricStyle.Render("Input Tokens:"), 
+		valueStyle.Render(fmt.Sprintf("%d", sm.CumulativeUsage.InputTokens))))
+	summaryContent.WriteString(fmt.Sprintf("  %s %s\n", 
+		metricStyle.Render("Cache Creation:"), 
+		valueStyle.Render(fmt.Sprintf("%d", sm.CumulativeUsage.CacheCreationInputTokens))))
+	summaryContent.WriteString(fmt.Sprintf("  %s %s\n", 
+		metricStyle.Render("Cache Read:"), 
+		valueStyle.Render(fmt.Sprintf("%d", sm.CumulativeUsage.CacheReadInputTokens))))
+	summaryContent.WriteString(fmt.Sprintf("  %s %s\n", 
+		metricStyle.Render("Output Tokens:"), 
+		valueStyle.Render(fmt.Sprintf("%d", sm.CumulativeUsage.OutputTokens))))
+	
+	totalTokens := sm.CumulativeUsage.InputTokens +
+		sm.CumulativeUsage.CacheCreationInputTokens +
+		sm.CumulativeUsage.CacheReadInputTokens +
+		sm.CumulativeUsage.OutputTokens
+	summaryContent.WriteString(fmt.Sprintf("  %s %s", 
+		metricStyle.Render("Total Tokens:"), 
+		valueStyle.Render(fmt.Sprintf("%d", totalTokens))))
 	
 	if len(sm.SessionChain) > 1 {
-		fmt.Println("\nSession Chain:")
+		summaryContent.WriteString(fmt.Sprintf("\n\n%s\n", 
+			commandStyle.Render("Session Chain:")))
 		for i, sessionID := range sm.SessionChain {
-			fmt.Printf("  %d. %s\n", i+1, sessionID)
+			summaryContent.WriteString(fmt.Sprintf("  %s %s\n", 
+				metricStyle.Render(fmt.Sprintf("%d.", i+1)), 
+				valueStyle.Render(sessionID)))
 		}
 	}
-	fmt.Println(strings.Repeat("=", 60))
+	
+	fmt.Print(summaryStyle.Render(summaryContent.String()))
+	fmt.Print("\n")
 }
 
 func (sm *SessionManager) StartNewConversation() {
@@ -246,34 +400,52 @@ func (sm *SessionManager) StartNewConversation() {
 	sm.CumulativeCost = 0
 	sm.CumulativeUsage = Usage{}
 	sm.ConversationStart = time.Now()
+	sm.systemInitShown = false
 	
-	fmt.Println("\nStarting new conversation...")
+	fmt.Print("\n")
+	fmt.Print(systemStyle.Render("🆕 [System]"))
+	fmt.Print(" ")
+	fmt.Print(subtitleStyle.Render("Starting new conversation..."))
+	fmt.Print("\n")
 }
 
 func main() {
 	sm := &SessionManager{
-		ConversationStart: time.Now(),
+		ConversationStart:   time.Now(),
+		markdownRenderer:    newMarkdownRenderer(),
 	}
 	reader := bufio.NewReader(os.Stdin)
 
-	fmt.Println("Claude CLI Integration")
-	fmt.Println("======================")
-	fmt.Println("Commands:")
-	fmt.Println("  /new     - Start a new conversation")
-	fmt.Println("  /model   - Set model (e.g., claude-sonnet-4-20250514)")
-	fmt.Println("  /session - Show current session ID")
-	fmt.Println("  /exit    - Exit the program")
-	fmt.Println("\nType your prompt and press Enter to send to Claude.")
-	fmt.Println()
+	fmt.Print(titleStyle.Render("Claude CLI Integration"))
+	fmt.Print("\n")
+	fmt.Print(subtitleStyle.Render("Interactive Claude CLI with session management"))
+	fmt.Print("\n")
+	fmt.Print(headerDivider.Render("────────────────────────────────────────"))
+	fmt.Print("\n\n")
+	
+	fmt.Print(commandStyle.Render("Commands:"))
+	fmt.Print("\n")
+	fmt.Print(helpStyle.Render("  /new     - Start a new conversation"))
+	fmt.Print("\n")
+	fmt.Print(helpStyle.Render("  /model   - Set model (e.g., claude-sonnet-4-20250514)"))
+	fmt.Print("\n")
+	fmt.Print(helpStyle.Render("  /session - Show current session ID"))
+	fmt.Print("\n")
+	fmt.Print(helpStyle.Render("  /exit    - Exit the program"))
+	fmt.Print("\n\n")
+	fmt.Print(headerDivider.Render("────────────────────────────────────────"))
+	fmt.Print("\n")
+	fmt.Print(subtitleStyle.Render("Type your prompt and press Enter to send to Claude."))
+	fmt.Print("\n\n")
 
 	for {
-		fmt.Print("> ")
+		fmt.Print(promptStyle.Render("> "))
 		input, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
-			fmt.Printf("Error reading input: %v\n", err)
+			fmt.Printf("%s Error reading input: %v\n", errorStyle.Render("❌ [Error]"), err)
 			continue
 		}
 
@@ -285,7 +457,8 @@ func main() {
 		switch {
 		case input == "/exit":
 			sm.ShowConversationSummary()
-			fmt.Println("Goodbye!")
+			fmt.Print(subtitleStyle.Render("Goodbye!"))
+			fmt.Print("\n")
 			return
 
 		case input == "/new":
@@ -294,26 +467,33 @@ func main() {
 
 		case input == "/session":
 			if sm.CurrentSessionID == "" {
-				fmt.Println("No active session")
+				fmt.Print(subtitleStyle.Render("No active session"))
+				fmt.Print("\n")
 			} else {
-				fmt.Printf("Current session: %s\n", sm.CurrentSessionID)
+				fmt.Printf("%s %s\n", 
+					metricStyle.Render("Current session:"), 
+					valueStyle.Render(sm.CurrentSessionID))
 			}
 			continue
 
 		case strings.HasPrefix(input, "/model "):
 			model := strings.TrimPrefix(input, "/model ")
 			sm.Model = model
-			fmt.Printf("Model set to: %s\n", model)
+			fmt.Printf("%s %s\n", 
+				metricStyle.Render("Model set to:"), 
+				valueStyle.Render(model))
 			continue
 
 		case strings.HasPrefix(input, "/"):
-			fmt.Printf("Unknown command: %s\n", input)
+			fmt.Printf("%s Unknown command: %s\n", 
+				errorStyle.Render("❌ [Error]"), 
+				input)
 			continue
 
 		default:
 			resume := sm.CurrentSessionID != ""
 			if err := sm.ExecuteCommand(input, resume); err != nil {
-				fmt.Printf("Error: %v\n", err)
+				fmt.Printf("%s %v\n", errorStyle.Render("❌ [Error]"), err)
 			}
 		}
 	}
