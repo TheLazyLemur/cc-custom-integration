@@ -50,6 +50,15 @@ type SystemInit struct {
 	Model     string   `json:"model"`
 }
 
+type ToolExecution struct {
+	ID          string
+	Name        string
+	StartTime   time.Time
+	EndTime     *time.Time
+	Status      string // "starting", "running", "completed", "failed"
+	Description string
+}
+
 type SessionManager struct {
 	CurrentSessionID     string
 	Model               string
@@ -61,6 +70,8 @@ type SessionManager struct {
 	ConversationStart   time.Time
 	markdownRenderer    *glamour.TermRenderer
 	systemInitShown     bool
+	activeTools         map[string]*ToolExecution
+	toolCounter         int
 }
 
 var (
@@ -138,6 +149,33 @@ var (
 
 	progressDot = lipgloss.NewStyle().
 		Foreground(primaryColor)
+
+	// Tool execution progress styles
+	toolStartStyle = lipgloss.NewStyle().
+		Foreground(warningColor).
+		Bold(true)
+
+	toolRunningStyle = lipgloss.NewStyle().
+		Foreground(primaryColor).
+		Bold(true)
+
+	toolCompletedStyle = lipgloss.NewStyle().
+		Foreground(successColor).
+		Bold(true)
+
+	toolFailedStyle = lipgloss.NewStyle().
+		Foreground(errorColor).
+		Bold(true)
+
+	toolProgressBox = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(mutedColor).
+		Padding(0, 1).
+		MarginLeft(2)
+
+	toolTimeStyle = lipgloss.NewStyle().
+		Foreground(mutedColor).
+		Italic(true)
 )
 
 func newMarkdownRenderer() *glamour.TermRenderer {
@@ -165,6 +203,100 @@ func (sm *SessionManager) renderMarkdown(content string) string {
 		return content // Fallback to plain text on error
 	}
 	return strings.TrimSuffix(rendered, "\n") // Remove trailing newline
+}
+
+func (sm *SessionManager) generateToolID() string {
+	sm.toolCounter++
+	return fmt.Sprintf("tool_%d", sm.toolCounter)
+}
+
+func (sm *SessionManager) startTool(name, description string) string {
+	if sm.activeTools == nil {
+		sm.activeTools = make(map[string]*ToolExecution)
+	}
+	
+	toolID := sm.generateToolID()
+	tool := &ToolExecution{
+		ID:          toolID,
+		Name:        name,
+		StartTime:   time.Now(),
+		Status:      "starting",
+		Description: description,
+	}
+	
+	sm.activeTools[toolID] = tool
+	
+	// Display tool start with animated spinner
+	icon := "⏳"
+	fmt.Printf("\n%s %s\n", 
+		toolStartStyle.Render(fmt.Sprintf("%s [Tool: %s]", icon, name)), 
+		toolTimeStyle.Render(description))
+	
+	return toolID
+}
+
+func (sm *SessionManager) updateToolStatus(toolID, status string) {
+	if tool, exists := sm.activeTools[toolID]; exists {
+		tool.Status = status
+		
+		var icon, statusText string
+		var style lipgloss.Style
+		
+		switch status {
+		case "running":
+			icon = "🔄"
+			statusText = "Running"
+			style = toolRunningStyle
+		case "completed":
+			icon = "✅"
+			statusText = "Completed"
+			style = toolCompletedStyle
+			now := time.Now()
+			tool.EndTime = &now
+		case "failed":
+			icon = "❌"
+			statusText = "Failed"
+			style = toolFailedStyle
+			now := time.Now()
+			tool.EndTime = &now
+		}
+		
+		duration := ""
+		if tool.EndTime != nil {
+			elapsed := tool.EndTime.Sub(tool.StartTime)
+			duration = fmt.Sprintf(" (%s)", elapsed.Round(time.Millisecond))
+		}
+		
+		fmt.Printf("%s %s%s\n", 
+			style.Render(fmt.Sprintf("%s [Tool: %s]", icon, tool.Name)), 
+			toolTimeStyle.Render(statusText),
+			toolTimeStyle.Render(duration))
+		
+		if status == "completed" || status == "failed" {
+			delete(sm.activeTools, toolID)
+		}
+	}
+}
+
+func (sm *SessionManager) showActiveTools() {
+	if len(sm.activeTools) == 0 {
+		return
+	}
+	
+	fmt.Print("\n")
+	fmt.Print(commandStyle.Render("Active Tools:"))
+	fmt.Print("\n")
+	
+	for _, tool := range sm.activeTools {
+		elapsed := time.Since(tool.StartTime)
+		status := fmt.Sprintf("%s - %s (%s)", 
+			tool.Name, 
+			tool.Status, 
+			elapsed.Round(time.Second))
+		
+		fmt.Print(toolProgressBox.Render(status))
+		fmt.Print("\n")
+	}
 }
 
 func (sm *SessionManager) ExecuteCommand(prompt string, resume bool) error {
@@ -274,7 +406,21 @@ func (sm *SessionManager) ProcessStream(reader io.Reader) error {
 								fmt.Print(rendered)
 							}
 						} else if item["type"] == "tool_use" {
-							fmt.Printf("\n%s\n", toolStyle.Render(fmt.Sprintf("🔧 [Tool: %s]", item["name"])))
+							if toolName, ok := item["name"].(string); ok {
+								description := ""
+								if input, ok := item["input"].(map[string]interface{}); ok {
+									if desc, ok := input["description"].(string); ok {
+										description = desc
+									} else if cmd, ok := input["command"].(string); ok {
+										description = fmt.Sprintf("Executing: %s", cmd)
+									} else if path, ok := input["file_path"].(string); ok {
+										description = fmt.Sprintf("Processing: %s", path)
+									} else if pattern, ok := input["pattern"].(string); ok {
+										description = fmt.Sprintf("Searching: %s", pattern)
+									}
+								}
+								sm.startTool(toolName, description)
+							}
 						}
 					}
 				}
@@ -285,8 +431,29 @@ func (sm *SessionManager) ProcessStream(reader io.Reader) error {
 			}
 
 		case "user":
-			// Tool results - just indicate completion
-			fmt.Print(progressDot.Render("•"))
+			// Tool results - show completion for the most recent tool
+			if len(sm.activeTools) > 0 {
+				// Find the most recently started active tool
+				var latestTool *ToolExecution
+				var latestToolID string
+				latestTime := time.Time{}
+				
+				for id, tool := range sm.activeTools {
+					if tool.StartTime.After(latestTime) {
+						latestTime = tool.StartTime
+						latestTool = tool
+						latestToolID = id
+					}
+				}
+				
+				if latestTool != nil {
+					if latestTool.Status == "starting" {
+						sm.updateToolStatus(latestToolID, "running")
+					} else if latestTool.Status == "running" {
+						sm.updateToolStatus(latestToolID, "completed")
+					}
+				}
+			}
 
 		case "result":
 			if msg.Subtype == "success" {
@@ -401,6 +568,8 @@ func (sm *SessionManager) StartNewConversation() {
 	sm.CumulativeUsage = Usage{}
 	sm.ConversationStart = time.Now()
 	sm.systemInitShown = false
+	sm.activeTools = make(map[string]*ToolExecution)
+	sm.toolCounter = 0
 	
 	fmt.Print("\n")
 	fmt.Print(systemStyle.Render("🆕 [System]"))
@@ -413,6 +582,7 @@ func main() {
 	sm := &SessionManager{
 		ConversationStart:   time.Now(),
 		markdownRenderer:    newMarkdownRenderer(),
+		activeTools:         make(map[string]*ToolExecution),
 	}
 	reader := bufio.NewReader(os.Stdin)
 
@@ -430,6 +600,8 @@ func main() {
 	fmt.Print(helpStyle.Render("  /model   - Set model (e.g., claude-sonnet-4-20250514)"))
 	fmt.Print("\n")
 	fmt.Print(helpStyle.Render("  /session - Show current session ID"))
+	fmt.Print("\n")
+	fmt.Print(helpStyle.Render("  /tools   - Show active tools"))
 	fmt.Print("\n")
 	fmt.Print(helpStyle.Render("  /exit    - Exit the program"))
 	fmt.Print("\n\n")
@@ -474,6 +646,10 @@ func main() {
 					metricStyle.Render("Current session:"), 
 					valueStyle.Render(sm.CurrentSessionID))
 			}
+			continue
+
+		case input == "/tools":
+			sm.showActiveTools()
 			continue
 
 		case strings.HasPrefix(input, "/model "):
