@@ -749,18 +749,18 @@ func (a *Application) renderConversationPanel(width, height int) string {
 	// Add scroll indicator if needed
 	if needsScrollIndicator {
 		// Calculate actual displayed range
-		displayStart := a.scrollPosition + 1
-		displayEnd := a.scrollPosition + len(displayLines)
+		// displayStart := a.scrollPosition + 1
+		// displayEnd := a.scrollPosition + len(displayLines)
 
-		scrollInfo := fmt.Sprintf("[Lines %d-%d of %d] ", displayStart, displayEnd, totalLines)
+		// scrollInfo := fmt.Sprintf("[Lines %d-%d of %d] ", displayStart, displayEnd, totalLines)
 
-		if a.scrollPosition == 0 {
-			scrollInfo += "↓ scroll down"
-		} else if a.scrollPosition >= maxScroll {
-			scrollInfo += "↑ scroll up"
-		} else {
-			scrollInfo += "↑↓ scroll"
-		}
+		// if a.scrollPosition == 0 {
+		// 	scrollInfo += "↓ scroll down"
+		// } else if a.scrollPosition >= maxScroll {
+		// 	scrollInfo += "↑ scroll up"
+		// } else {
+		// 	scrollInfo += "↑↓ scroll"
+		// }
 
 		// Pad content to exact height before adding scroll indicator
 		for len(finalContent) < contentViewportHeight {
@@ -769,9 +769,9 @@ func (a *Application) renderConversationPanel(width, height int) string {
 
 		// Add separator and scroll indicator
 		finalContent = append(finalContent, "")
-		if len(finalContent) < height {
-			finalContent = append(finalContent, a.styles.Status.Render(scrollInfo))
-		}
+		// if len(finalContent) < height {
+		// 	finalContent = append(finalContent, a.styles.Status.Render(scrollInfo))
+		// }
 	}
 
 	for len(finalContent) < height {
@@ -1132,7 +1132,13 @@ func (a *Application) scrollDown() {
 
 func (a *Application) scrollPageUp() {
 	lm := components.NewLayoutManager(a.width, a.height)
-	viewport := lm.GetConversationConstraints().ViewportHeight
+	dims := lm.GetConversationConstraints()
+
+	// Calculate viewport height the same way as renderConversationPanel
+	height := max(1, dims.ConversationHeight-4)
+	scrollIndicatorLines := 2
+	viewport := height - scrollIndicatorLines
+
 	if viewport < 1 {
 		viewport = 1
 	}
@@ -1142,7 +1148,13 @@ func (a *Application) scrollPageUp() {
 
 func (a *Application) scrollPageDown() {
 	lm := components.NewLayoutManager(a.width, a.height)
-	viewport := lm.GetConversationConstraints().ViewportHeight
+	dims := lm.GetConversationConstraints()
+
+	// Calculate viewport height the same way as renderConversationPanel
+	height := max(1, dims.ConversationHeight-4)
+	scrollIndicatorLines := 2
+	viewport := height - scrollIndicatorLines
+
 	if viewport < 1 {
 		viewport = 1
 	}

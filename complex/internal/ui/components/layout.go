@@ -26,8 +26,8 @@ func NewLayoutManager(width, height int) *LayoutManager {
 func (lm *LayoutManager) CalculatePanelDimensions() PanelDimensions {
     // Available height for the main content area
     contentHeight := lm.height - lm.headerFooterMargin
-    // Panel heights used in current implementation
-    panelHeight := contentHeight - lm.panelPaddingMargin
+    // Panel heights - let caller subtract padding as needed (app.go does height-4)
+    panelHeight := contentHeight
 
     // Widths: conversation takes remaining width after sidebar reservation
     convWidth := lm.width - lm.sidebarWidthTotal
@@ -53,7 +53,7 @@ func (lm *LayoutManager) CalculatePanelDimensions() PanelDimensions {
 // GetConversationConstraints computes rendering constraints for the conversation area
 func (lm *LayoutManager) GetConversationConstraints() ConversationConstraints {
     dims := lm.CalculatePanelDimensions()
-    // Inner content height for conversation (account for panel padding/border ~4)
+    // Inner content height for conversation (match renderConversationPanel: height-4)
     inner := dims.ConversationHeight - lm.panelPaddingMargin
     if inner < 1 {
         inner = 1
